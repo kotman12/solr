@@ -37,7 +37,6 @@ import org.apache.lucene.document.StoredValue;
 import org.apache.lucene.index.DocValuesType;
 import org.apache.lucene.index.IndexableField;
 import org.apache.lucene.index.IndexableFieldType;
-import org.apache.lucene.monitor.MonitorFields;
 import org.apache.lucene.monitor.MonitorQuery;
 import org.apache.lucene.monitor.Presearcher;
 import org.apache.lucene.monitor.QCEVisitor;
@@ -48,6 +47,7 @@ import org.apache.solr.common.SolrInputDocument;
 import org.apache.solr.common.params.CommonParams;
 import org.apache.solr.common.util.JavaBinCodec;
 import org.apache.solr.core.SolrCore;
+import org.apache.solr.monitor.MonitorFields;
 import org.apache.solr.monitor.MonitorSchemaFields;
 import org.apache.solr.monitor.SimpleQueryParser;
 import org.apache.solr.schema.IndexSchema;
@@ -59,6 +59,7 @@ public class MonitorUpdateRequestProcessor extends UpdateRequestProcessor {
 
   private final SolrCore core;
   private final IndexSchema indexSchema;
+  private final MonitorFields monitorFields;
   private final QueryDecomposer queryDecomposer;
   private final Presearcher presearcher;
   private final MonitorSchemaFields monitorSchemaFields;
@@ -67,17 +68,20 @@ public class MonitorUpdateRequestProcessor extends UpdateRequestProcessor {
   public MonitorUpdateRequestProcessor(
       UpdateRequestProcessor next,
       SolrCore core,
+      MonitorFields monitorFields,
       QueryDecomposer queryDecomposer,
       Presearcher presearcher) {
     super(next);
     this.core = core;
     this.indexSchema = core.getLatestSchema();
+    this.monitorFields = monitorFields;
     this.queryDecomposer = queryDecomposer;
     this.presearcher = presearcher;
-    this.monitorSchemaFields = new MonitorSchemaFields(indexSchema);
+    this.monitorSchemaFields = new MonitorSchemaFields(indexSchema, this.monitorFields);
     this.allowedFieldNames =
         Set.of(
-            MonitorFields.MONITOR_QUERY,
+            this.monitorFields.queryFieldName,
+            // v--- TODO: what's connection with monitorFields.queryIdFieldName ?
             indexSchema.getUniqueKeyField().getName(),
             CommonParams.VERSION_FIELD);
   }
@@ -87,12 +91,12 @@ public class MonitorUpdateRequestProcessor extends UpdateRequestProcessor {
     var solrInputDocument = cmd.getSolrInputDocument();
     String idFieldName = indexSchema.getUniqueKeyField().getName();
     var queryId = (String) solrInputDocument.getFieldValue(idFieldName);
-    var queryFieldValue = solrInputDocument.getFieldValue(MonitorFields.MONITOR_QUERY);
+    var queryFieldValue = solrInputDocument.getFieldValue(monitorFields.queryFieldName);
     if (queryFieldValue == null) {
       throw new SolrException(
           SolrException.ErrorCode.BAD_REQUEST,
           "Document is missing mandatory "
-              + MonitorFields.MONITOR_QUERY
+              + monitorFields.queryFieldName
               + " field which is required by "
               + getClass().getSimpleName()
               + ".");
@@ -134,7 +138,8 @@ public class MonitorUpdateRequestProcessor extends UpdateRequestProcessor {
       solrInputDocument
           .getChildDocuments()
           .forEach(
-              child -> child.setField(idFieldName, child.getFieldValue(MonitorFields.CACHE_ID)));
+              child ->
+                  child.setField(idFieldName, child.getFieldValue(monitorFields.cacheIdFieldName)));
     }
     copyFirstChildToParent(solrInputDocument, firstChild);
     super.processAdd(cmd);
@@ -143,7 +148,7 @@ public class MonitorUpdateRequestProcessor extends UpdateRequestProcessor {
   private void copyFirstChildToParent(SolrInputDocument parent, SolrInputDocument firstChild) {
     parent.setField(
         indexSchema.getUniqueKeyField().getName(),
-        firstChild.getFieldValue(MonitorFields.CACHE_ID));
+        firstChild.getFieldValue(monitorFields.cacheIdFieldName));
     for (var firstChildField : firstChild) {
       parent.setField(firstChildField.getName(), firstChildField.getValue());
     }

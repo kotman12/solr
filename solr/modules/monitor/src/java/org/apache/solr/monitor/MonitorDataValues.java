@@ -24,11 +24,12 @@ import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.NumericDocValues;
 import org.apache.lucene.index.SortedDocValues;
-import org.apache.lucene.monitor.MonitorFields;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.solr.common.params.CommonParams;
 
 public class MonitorDataValues {
+
+  private final MonitorFields monitorFields;
 
   private SortedDocValues queryIdIt;
   private SortedDocValues cacheIdIt;
@@ -37,11 +38,15 @@ public class MonitorDataValues {
   private int currentDoc = DocIdSetIterator.NO_MORE_DOCS;
   private LeafReader reader;
 
+  public MonitorDataValues(MonitorFields monitorFields) {
+    this.monitorFields = monitorFields;
+  }
+
   public void update(LeafReaderContext context) throws IOException {
     reader = context.reader();
-    cacheIdIt = reader.getSortedDocValues(MonitorFields.CACHE_ID);
-    queryIdIt = reader.getSortedDocValues(MonitorFields.QUERY_ID);
-    mqIt = reader.getSortedDocValues(MonitorFields.MONITOR_QUERY);
+    cacheIdIt = reader.getSortedDocValues(monitorFields.cacheIdFieldName);
+    queryIdIt = reader.getSortedDocValues(monitorFields.queryIdFieldName);
+    mqIt = reader.getSortedDocValues(monitorFields.queryFieldName);
     versionIt = reader.getNumericDocValues(CommonParams.VERSION_FIELD);
     currentDoc = DocIdSetIterator.NO_MORE_DOCS;
   }
@@ -64,7 +69,7 @@ public class MonitorDataValues {
     if (mqIt != null && mqIt.advanceExact(currentDoc)) {
       return mqIt.lookupOrd(mqIt.ordValue()).utf8ToString();
     }
-    return reader.document(currentDoc).get(MonitorFields.MONITOR_QUERY);
+    return reader.document(currentDoc).get(monitorFields.queryFieldName);
   }
 
   public long getVersion() throws IOException {

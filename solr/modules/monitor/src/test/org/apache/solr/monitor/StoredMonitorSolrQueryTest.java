@@ -19,7 +19,6 @@
 
 package org.apache.solr.monitor;
 
-import org.apache.lucene.monitor.MonitorFields;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
@@ -35,7 +34,7 @@ public class StoredMonitorSolrQueryTest extends MonitorSolrQueryTest {
     index(
         id,
         Integer.toString(0),
-        MonitorFields.MONITOR_QUERY,
+        monitorFields.queryFieldName,
         "{!xmlparser}" + read("/monitor/BigDisjunctionQuery.xml"));
     commit();
   }
