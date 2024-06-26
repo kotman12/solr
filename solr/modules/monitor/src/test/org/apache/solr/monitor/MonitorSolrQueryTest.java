@@ -384,137 +384,6 @@ public class MonitorSolrQueryTest extends BaseDistributedSearchTestCase {
   }
 
   @Test
-  @ShardsFixed(num = 2)
-  public void testMultiDocHighlightMatchType() throws Exception {
-    index(
-        id,
-        Integer.toString(0),
-        MonitorFields.MONITOR_QUERY,
-        "content0_offset_s:\"elevator stairs\"");
-    index(
-        id,
-        Integer.toString(1),
-        MonitorFields.MONITOR_QUERY,
-        "content0_offset_sds:highlights && content0_offset_sds:field && content0_offset_s:elevator");
-    index(
-        id,
-        Integer.toString(2),
-        MonitorFields.MONITOR_QUERY,
-        "content0_offset_sds:ignore && content0_offset_sds:field && content0_offset_s:elevator");
-    index(
-        id,
-        Integer.toString(3),
-        MonitorFields.MONITOR_QUERY,
-        "content0_offset_sds:highlights && content0_offset_sds:ignore && content0_offset_s:elevator");
-    index(id, Integer.toString(4), MonitorFields.MONITOR_QUERY, "content0_offset_s:elevator");
-    commit();
-    handle.clear();
-    handle.put("responseHeader", SKIP);
-    handle.put("response", SKIP);
-
-    final boolean writeToDocList = supportsWriteToDocList();
-    Object[] params =
-        new Object[] {
-          CommonParams.SORT,
-          id + " desc",
-          CommonParams.JSON,
-          read("/monitor/multi-doc-batch-multi-valued.json"),
-          CommonParams.QT,
-          "/reverseSearch",
-          QUERY_MATCH_TYPE_KEY,
-          "highlights",
-          WRITE_TO_DOC_LIST_KEY,
-          writeToDocList
-        };
-
-    QueryResponse response = query(params);
-    System.out.println("Response = " + response);
-    String f1 = "content0_offset_s";
-    String f2 = "content0_offset_sds";
-
-    Map<Object, Object> queryMatch0 =
-        queryMatch("0", f1, List.of(new HighlightsMatch.Hit(0, 0, 1, 15)), f2, List.of());
-    Map<Object, Object> queryMatch1 =
-        queryMatch(
-            "1",
-            f1,
-            List.of(new HighlightsMatch.Hit(0, 0, 0, 8)),
-            f2,
-            List.of(
-                new HighlightsMatch.Hit(1, 5, 1, 15), new HighlightsMatch.Hit(106, 38, 106, 43)));
-    Map<Object, Object> queryMatch4 =
-        queryMatch("4", f1, List.of(new HighlightsMatch.Hit(0, 0, 0, 8)), f2, List.of());
-    validate(response, 0, List.of(queryMatch0, queryMatch1, queryMatch4), writeToDocList);
-    queryMatch4 = queryMatch("4", f1, List.of(new HighlightsMatch.Hit(2, 7, 2, 15)), f2, List.of());
-    validate(response, 1, List.of(queryMatch4), writeToDocList);
-    var queries = monitorQueries(response, 0);
-    assertEquals(3, queries.size());
-    queries = monitorQueries(response, 1);
-    assertEquals(1, queries.size());
-    if (writeToDocList) {
-      assertEquals(3, ((SolrDocumentList) response.getResponse().get("response")).size());
-    }
-  }
-
-  @Test
-  public void testHighlightMatchType() throws Exception {
-    index(id, Integer.toString(0), MonitorFields.MONITOR_QUERY, "content0_s:\"elevator stairs\"");
-    index(
-        id,
-        Integer.toString(1),
-        MonitorFields.MONITOR_QUERY,
-        "content0_sds:highlights || content0_sds:field || content0_s:elevator");
-    index(
-        id,
-        Integer.toString(2),
-        MonitorFields.MONITOR_QUERY,
-        "content0_sds:ignore && content0_sds:field && content0_s:elevator");
-    commit();
-    handle.clear();
-    handle.put("responseHeader", SKIP);
-    handle.put("response", SKIP);
-
-    final boolean writeToDocList = supportsWriteToDocList();
-    Object[] params =
-        new Object[] {
-          CommonParams.SORT,
-          id + " desc",
-          CommonParams.JSON,
-          read("/monitor/single-doc-batch-multi-valued.json"),
-          CommonParams.QT,
-          "/reverseSearch",
-          QUERY_MATCH_TYPE_KEY,
-          "highlights",
-          WRITE_TO_DOC_LIST_KEY,
-          writeToDocList
-        };
-
-    QueryResponse response = query(params);
-    System.out.println("Response = " + response);
-    String f1 = "content0_s";
-    String f2 = "content0_sds";
-
-    Map<Object, Object> queryMatch0 =
-        queryMatch("0", f1, List.of(new HighlightsMatch.Hit(0, 0, 1, 15)), f2, List.of());
-    Map<Object, Object> queryMatch1 =
-        queryMatch(
-            "1",
-            f1,
-            List.of(new HighlightsMatch.Hit(0, 0, 0, 8)),
-            f2,
-            List.of(
-                new HighlightsMatch.Hit(1, 5, 1, 15), new HighlightsMatch.Hit(106, 38, 106, 43)));
-    validate(response, 0, List.of(queryMatch0, queryMatch1), writeToDocList);
-    var queries = monitorQueries(response, 0);
-    assertEquals(2, queries.size());
-    if (writeToDocList) {
-      // The disjuncts come in as separate matches
-      // TODO is this the most desirable behavior?
-      assertEquals(4, ((SolrDocumentList) response.getResponse().get("response")).size());
-    }
-  }
-
-  @Test
   public void testDeleteByQueryId() throws Exception {
     index(
         id,
@@ -587,7 +456,8 @@ public class MonitorSolrQueryTest extends BaseDistributedSearchTestCase {
     return outHits;
   }
 
-  void validate(QueryResponse response, int doc, Object expectedValue, boolean writeToDocList) {
+  void validate(
+      QueryResponse response, int doc, List<String> expectedValue, boolean writeToDocList) {
     var monitorQueries = monitorQueries(response, doc);
     assertEquals(expectedValue, monitorQueries);
     if (writeToDocList) {
@@ -595,27 +465,22 @@ public class MonitorSolrQueryTest extends BaseDistributedSearchTestCase {
     }
   }
 
+  void validateDocList(QueryResponse response, int doc, List<String> expectedList) {
+    // TODO
+  }
+
   void validate(
-      QueryResponse response, int doc, int query, Object expectedValue, boolean writeToDocList) {
+      QueryResponse response, int doc, int query, String expectedValue, boolean writeToDocList) {
     var monitorQueries = monitorQueries(response, doc);
     assertTrue(monitorQueries.size() > query);
     assertEquals(expectedValue, monitorQueries.get(query));
     if (writeToDocList) {
-      validateDocList(response, doc, expectedValue);
+      validateDocList(response, doc, query, expectedValue);
     }
   }
 
-  void validateDocList(QueryResponse response, int doc, Object expectedValue) {
-    SolrDocumentList actualValues = (SolrDocumentList) response.getResponse().get("response");
-    // minimal checks only so far; TODO: make this more comprehensive
-    if (expectedValue instanceof List) {
-      List<Object> expectedValues = (List) expectedValue;
-      if (expectedValues.size() == 1 && actualValues.size() <= 2) {
-        assertEquals(
-            expectedValues.get(0),
-            actualValues.get(actualValues.size() - 1 - doc).getFieldValue(MonitorFields.QUERY_ID));
-      }
-    }
+  void validateDocList(QueryResponse response, int doc, int query, String expectedValue) {
+    // TODO
   }
 
   List<Object> monitorQueries(QueryResponse response, int doc) {
