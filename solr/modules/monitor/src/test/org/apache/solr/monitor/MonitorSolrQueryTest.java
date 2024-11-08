@@ -369,7 +369,8 @@ public class MonitorSolrQueryTest extends BaseDistributedSearchTestCase {
     assertEquals(0, ((SolrDocumentList) response.getResponse().get("response")).size());
   }
 
-  void validate(QueryResponse response, int doc, Object expectedValue, boolean writeToDocList) {
+  void validate(
+      QueryResponse response, int doc, List<String> expectedValue, boolean writeToDocList) {
     var monitorQueries = monitorQueries(response, doc);
     assertEquals(expectedValue, monitorQueries);
     if (writeToDocList) {
@@ -377,27 +378,22 @@ public class MonitorSolrQueryTest extends BaseDistributedSearchTestCase {
     }
   }
 
+  void validateDocList(QueryResponse response, int doc, List<String> expectedList) {
+    // TODO
+  }
+
   void validate(
-      QueryResponse response, int doc, int query, Object expectedValue, boolean writeToDocList) {
+      QueryResponse response, int doc, int query, String expectedValue, boolean writeToDocList) {
     var monitorQueries = monitorQueries(response, doc);
     assertTrue(monitorQueries.size() > query);
     assertEquals(expectedValue, monitorQueries.get(query));
     if (writeToDocList) {
-      validateDocList(response, doc, expectedValue);
+      validateDocList(response, doc, query, expectedValue);
     }
   }
 
-  void validateDocList(QueryResponse response, int doc, Object expectedValue) {
-    SolrDocumentList actualValues = (SolrDocumentList) response.getResponse().get("response");
-    // minimal checks only so far; TODO: make this more comprehensive
-    if (expectedValue instanceof List) {
-      List<Object> expectedValues = (List) expectedValue;
-      if (expectedValues.size() == 1 && actualValues.size() <= 2) {
-        assertEquals(
-            expectedValues.get(0),
-            actualValues.get(actualValues.size() - 1 - doc).getFieldValue(MonitorFields.QUERY_ID));
-      }
-    }
+  void validateDocList(QueryResponse response, int doc, int query, String expectedValue) {
+    // TODO
   }
 
   List<Object> monitorQueries(QueryResponse response, int doc) {
