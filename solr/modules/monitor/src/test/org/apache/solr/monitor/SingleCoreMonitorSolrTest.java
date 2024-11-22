@@ -25,16 +25,17 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Locale;
 import java.util.stream.IntStream;
-import org.apache.lucene.monitor.MonitorFields;
 import org.apache.solr.SolrTestCaseJ4;
 import org.apache.solr.common.SolrException;
 import org.apache.solr.common.params.CommonParams;
+import org.apache.solr.common.util.NamedList;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
 public class SingleCoreMonitorSolrTest extends SolrTestCaseJ4 {
 
+  private static final MonitorFields monitorFields = MonitorFields.create(new NamedList<>());
   private final String monitorChain = "monitor";
 
   @BeforeClass
@@ -55,7 +56,7 @@ public class SingleCoreMonitorSolrTest extends SolrTestCaseJ4 {
     String regularChain = "regular-ole-document";
     addDoc(adoc("id", "0", "content_s", "some unremarkable content"), regularChain);
     addDoc(commit(), regularChain);
-    addDoc(adoc("id", "1", MonitorFields.MONITOR_QUERY, "content_s:test"), monitorChain);
+    addDoc(adoc("id", "1", monitorFields.queryFieldName, "content_s:test"), monitorChain);
     addDoc(commit(), monitorChain);
     URL url = getClass().getResource("/monitor/multi-value-doc.json");
     String json = Files.readString(Path.of(url.toURI()), StandardCharsets.UTF_8);
@@ -70,8 +71,8 @@ public class SingleCoreMonitorSolrTest extends SolrTestCaseJ4 {
 
   @Test
   public void queryStringIdTest() throws Exception {
-    addDoc(adoc("id", "1", MonitorFields.MONITOR_QUERY, "id:4"), monitorChain);
-    addDoc(adoc("id", "2", MonitorFields.MONITOR_QUERY, "id:4"), monitorChain);
+    addDoc(adoc("id", "1", monitorFields.queryFieldName, "id:4"), monitorChain);
+    addDoc(adoc("id", "2", monitorFields.queryFieldName, "id:4"), monitorChain);
     addDoc(commit(), monitorChain);
     URL url = getClass().getResource("/monitor/multi-value-doc.json");
     String json = Files.readString(Path.of(url.toURI()), StandardCharsets.UTF_8);
@@ -91,7 +92,7 @@ public class SingleCoreMonitorSolrTest extends SolrTestCaseJ4 {
     String lowerCaseMessage = ex.getMessage().toLowerCase(Locale.ROOT);
     assertTrue(lowerCaseMessage.contains("missing"));
     assertTrue(lowerCaseMessage.contains("mandatory"));
-    assertTrue(ex.getMessage().contains(MonitorFields.MONITOR_QUERY));
+    assertTrue(ex.getMessage().contains(monitorFields.queryFieldName));
     assertTrue(lowerCaseMessage.contains("field"));
   }
 
@@ -107,7 +108,7 @@ public class SingleCoreMonitorSolrTest extends SolrTestCaseJ4 {
                     adoc(
                         "id",
                         "1",
-                        MonitorFields.MONITOR_QUERY,
+                        monitorFields.queryFieldName,
                         "content_s:test",
                         unsupportedField1,
                         "a",
@@ -126,14 +127,18 @@ public class SingleCoreMonitorSolrTest extends SolrTestCaseJ4 {
   public void multiPassPresearcherTest() throws Exception {
     addDoc(
         adoc(
-            "id", "0", MonitorFields.MONITOR_QUERY, "content0_s:\"elevator stairs and escalator\""),
+            "id",
+            "0",
+            monitorFields.queryFieldName,
+            "content0_s:\"elevator stairs and escalator\""),
         monitorChain);
     addDoc(
-        adoc("id", "1", MonitorFields.MONITOR_QUERY, "content0_s:\"elevator test\""), monitorChain);
+        adoc("id", "1", monitorFields.queryFieldName, "content0_s:\"elevator test\""),
+        monitorChain);
     addDoc(
-        adoc("id", "2", MonitorFields.MONITOR_QUERY, "content0_s:\"stairs test\""), monitorChain);
+        adoc("id", "2", monitorFields.queryFieldName, "content0_s:\"stairs test\""), monitorChain);
     addDoc(
-        adoc("id", "3", MonitorFields.MONITOR_QUERY, "content0_s:\"elevator stairs\""),
+        adoc("id", "3", monitorFields.queryFieldName, "content0_s:\"elevator stairs\""),
         monitorChain);
     addDoc(commit(), monitorChain);
     URL url = getClass().getResource("/monitor/elevator-doc.json");
@@ -168,7 +173,7 @@ public class SingleCoreMonitorSolrTest extends SolrTestCaseJ4 {
                     adoc(
                         "id",
                         Integer.toString(i),
-                        MonitorFields.MONITOR_QUERY,
+                        monitorFields.queryFieldName,
                         "content_s:\"elevator stairs\""),
                     monitorChain);
               } catch (Exception e) {
@@ -206,7 +211,7 @@ public class SingleCoreMonitorSolrTest extends SolrTestCaseJ4 {
                     adoc(
                         "id",
                         Integer.toString(i),
-                        MonitorFields.MONITOR_QUERY,
+                        monitorFields.queryFieldName,
                         "content_s:\"x y\""),
                     monitorChain);
               } catch (Exception e) {

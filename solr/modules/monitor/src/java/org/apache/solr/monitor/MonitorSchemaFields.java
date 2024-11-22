@@ -19,7 +19,6 @@
 
 package org.apache.solr.monitor;
 
-import org.apache.lucene.monitor.MonitorFields;
 import org.apache.solr.schema.IndexSchema;
 import org.apache.solr.schema.SchemaField;
 
@@ -29,10 +28,10 @@ public class MonitorSchemaFields {
   private final SchemaField queryId;
   private final SchemaField monitorQuery;
 
-  public MonitorSchemaFields(IndexSchema indexSchema) {
-    this.cacheId = indexSchema.getField(MonitorFields.CACHE_ID);
-    this.queryId = indexSchema.getField(MonitorFields.QUERY_ID);
-    this.monitorQuery = indexSchema.getField(MonitorFields.MONITOR_QUERY);
+  public MonitorSchemaFields(IndexSchema indexSchema, MonitorFields monitorFields) {
+    this.cacheId = indexSchema.getField(monitorFields.cacheIdFieldName);
+    this.queryId = indexSchema.getField(monitorFields.queryIdFieldName);
+    this.monitorQuery = indexSchema.getField(monitorFields.queryFieldName);
   }
 
   public SchemaField getCacheId() {

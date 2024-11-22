@@ -34,7 +34,6 @@ import java.util.function.BiPredicate;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.monitor.DocumentBatchVisitor;
-import org.apache.lucene.monitor.MonitorFields;
 import org.apache.lucene.monitor.Presearcher;
 import org.apache.lucene.monitor.QueryDecomposer;
 import org.apache.lucene.monitor.QueryMatch;
@@ -50,6 +49,7 @@ import org.apache.solr.handler.component.QueryComponent;
 import org.apache.solr.handler.component.ResponseBuilder;
 import org.apache.solr.handler.loader.JsonLoader;
 import org.apache.solr.monitor.AliasingPresearcher;
+import org.apache.solr.monitor.MonitorFields;
 import org.apache.solr.monitor.SolrMonitorQueryDecoder;
 import org.apache.solr.monitor.cache.MonitorQueryCache;
 import org.apache.solr.monitor.cache.SharedMonitorCache;
@@ -63,6 +63,8 @@ public class ReverseSearchComponent extends QueryComponent implements SolrCoreAw
 
   public static final String COMPONENT_NAME = "reverseSearch";
 
+  private MonitorFields monitorFields;
+
   private static final String SOLR_MONITOR_CACHE_NAME_KEY = "solrMonitorCacheName";
   private static final String SOLR_MONITOR_CACHE_NAME_DEFAULT = "solrMonitorCache";
   private String solrMonitorCacheName = SOLR_MONITOR_CACHE_NAME_DEFAULT;
@@ -74,6 +76,7 @@ public class ReverseSearchComponent extends QueryComponent implements SolrCoreAw
   @Override
   public void init(NamedList<?> args) {
     super.init(args);
+    monitorFields = MonitorFields.create(args);
     Object solrMonitorCacheName = args.remove(SOLR_MONITOR_CACHE_NAME_KEY);
     if (solrMonitorCacheName != null) {
       this.solrMonitorCacheName = (String) solrMonitorCacheName;
@@ -206,7 +209,7 @@ public class ReverseSearchComponent extends QueryComponent implements SolrCoreAw
       }
     }
 
-    for (String fieldName : MonitorFields.REQUIRED_MONITOR_SCHEMA_FIELDS) {
+    for (String fieldName : monitorFields.fieldNames()) {
       var field = schema.getFieldOrNull(fieldName);
       if (field == null) {
         throw new IllegalStateException(
@@ -222,6 +225,10 @@ public class ReverseSearchComponent extends QueryComponent implements SolrCoreAw
             TermFilteredPresearcher.ANYTOKEN_FIELD + " field must be tokenized and multi-valued.");
       }
     }
+  }
+
+  public MonitorFields getMonitorFields() {
+    return monitorFields;
   }
 
   public QueryDecomposer getQueryDecomposer() {

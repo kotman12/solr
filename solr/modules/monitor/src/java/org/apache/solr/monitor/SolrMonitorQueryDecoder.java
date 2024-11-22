@@ -30,6 +30,7 @@ import org.apache.solr.monitor.search.ReverseSearchComponent;
 public class SolrMonitorQueryDecoder {
 
   private final SolrCore core;
+  public final MonitorFields monitorFields; // TODO: (how) can we avoid this being (public or here)?
   private final QueryDecomposer queryDecomposer;
 
   public SolrMonitorQueryDecoder(SolrCore core) {
@@ -37,6 +38,7 @@ public class SolrMonitorQueryDecoder {
     ReverseSearchComponent rsc =
         (ReverseSearchComponent)
             core.getSearchComponents().get(ReverseSearchComponent.COMPONENT_NAME);
+    this.monitorFields = rsc.getMonitorFields();
     this.queryDecomposer = rsc.getQueryDecomposer();
   }
 

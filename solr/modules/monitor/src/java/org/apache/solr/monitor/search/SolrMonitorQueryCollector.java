@@ -34,13 +34,14 @@ class SolrMonitorQueryCollector extends DelegatingCollector {
   private final MonitorQueryCache monitorQueryCache;
   private final SolrMonitorQueryDecoder queryDecoder;
   private final SolrMatcherSink matcherSink;
-  private final MonitorDataValues dataValues = new MonitorDataValues();
+  private final MonitorDataValues dataValues;
   private String lastQueryId;
 
   SolrMonitorQueryCollector(CollectorContext collectorContext) {
     this.monitorQueryCache = collectorContext.queryCache;
     this.queryDecoder = collectorContext.queryDecoder;
     this.matcherSink = collectorContext.solrMatcherSink;
+    this.dataValues = new MonitorDataValues(this.queryDecoder.monitorFields);
   }
 
   @Override
