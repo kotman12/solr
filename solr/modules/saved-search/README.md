@@ -13,7 +13,7 @@ You must configure your update processor chain to contain the `SavedSearchUpdate
 It must be added after the DistributedUpdateProcessor, i.e:
 
 ```xml
-<updateRequestProcessorChain>
+<updateRequestProcessorChain><!-- any other properties here -->
     <processor class="solr.LogUpdateProcessorFactory"/>
     <processor class="solr.DistributedUpdateProcessorFactory"/>
     <processor class="solr.SavedSearchUpdateProcessorFactory"/>
@@ -48,6 +48,7 @@ Alternatively, you could just update the existing `/select` handler, i.e.:
 ```xml
 <requestHandler name="/select" class="solr.SearchHandler">
     <lst name="defaults">
+        <!-- any other properties here -->
         <int name="rows">2147483647</int>
     </lst>
     <arr name="last-components">
@@ -85,7 +86,7 @@ Now simply run `bin/solr start -e cloud -Dsolr.modules=saved-search` to start so
 Below is an example of how to index a query:
 
 ```bash
-curl "http://localhost:8984/solr/mycollection/update" -d '
+curl -X POST "http://localhost:8983/solr/mycollection/update" -d '
 [
     {
         "id": "1",
@@ -94,13 +95,14 @@ curl "http://localhost:8984/solr/mycollection/update" -d '
 ]'
 ```
 
-The response should be the same as Solr’s regular update API
+The response should be the same as Solr’s regular update API. For the sake of example let us add 3 more docs with `"_mq_" : "content_txt:foo"`,
+`"_mq_" : "content_txt:bar"`, and `"_mq_" : "content_txt : \"foo bar\""`.
 
 Below is an example of how to search for matching queries given a document:
 
 ```bash
-curl "http://localhost:8984/solr/mycollection/reverseSearch" -d '
-    {
+curl -X POST "http://localhost:8983/solr/mycollection/reverseSearch" -d '
+{
         "params":{
         "reverseSearchDocuments":[
             {
@@ -112,6 +114,28 @@ curl "http://localhost:8984/solr/mycollection/reverseSearch" -d '
 ```
 
 The response should be the same as Solr’s regular select or query API.
+```json
+{
+  "responseHeader":{
+    "zkConnected":true,
+    "status":0,
+    "QTime":172
+  },
+  "response":{
+    "numFound":1,
+    "start":0,
+    "numFoundExact":true,
+    "docs":[{
+      "id":"1_0",
+      "_mq_":"content_txt:test",
+      "_version_":1817789792532824064,
+      "_root_":"1",
+      "_query_id_":"1",
+      "_cache_id_":"1_0"
+    }]
+  }
+}
+```
 
 Currently we don’t support retrieving or storing additional
 columns alongside each saved search although this should be easy to implement in the future. Storing queries with default fields is
@@ -126,10 +150,28 @@ configure the `/select` handler to have a ReverseSearch component as mentioned i
 Below is an example of how to stream a reverse search:
 
 ```bash
-curl --data-urlencode 'expr=search(mycollection,
-fl="_query_id_",
-json="{\"params\":{\"reverseSearchDocuments\":[{\"content_txt\":\"some content with the word test in it.\"}]}}",
-sort="_query_id_ asc")' http://localhost:8983/solr/mycollection/stream
+curl -X POST http://localhost:8983/solr/mycollection/stream -d '
+expr=search(mycollection,
+	fl="_query_id_",
+	json="{\"params\":{\"reverseSearchDocuments\":[{\"content_txt\":\"some content with foo not bar in it.\"}]}}",
+	sort="_query_id_ asc"
+)'
+```
+
+This should stream the following result:
+```json
+{
+  "result-set":{
+    "docs":[{
+      "_query_id_":"2"
+    },{
+      "_query_id_":"3"
+    },{
+      "EOF":true,
+      "RESPONSE_TIME":40
+    }]
+  }
+}
 ```
 
 # Advanced Configuration
@@ -150,6 +192,23 @@ the `_mq_` configuration to:
 <field name="_mq_" type="string" indexed="false" stored="true" docValues="false"/>
 ```
 Lucene-monitor doesn’t face this issue since it uses binary docValues but unfortunately Solr’s `BinaryField` doesn’t support docValues yet.
+
+It is recommended to run the `ReverseSearchComponent` with `applyFieldNameAlias=true`. However, this requires also adding the field
+`_________________________________________________saved_search_alias_*` to your schema as mentioned in Basic Configuration. The advantages of setting `applyFieldNameAlias=true` are:
+1. Lucene-monitor-generated text fields are guaranteed to always be compatible with `*saved_search_alias_*` as it was defined in Basic Configuration.
+2. You cannot use `MultipassTermFilteredPresearcher` unless all your document text fields are also dynamic with a _prefix_ pattern, i.e. `txt_*` and not `*_txt`. With `applyFieldNameAlias=true` you do *not* have to worry about this.
+3. You can safely store your queries in the same collection as your documents without worrying about your queries affecting document-search relevance. It's still probably better to store queries in a separate collection, but mentioning this advantage for completeness.
+
+The reason the `_________________________________________________saved_search_alias_*` is so long is because we want it to override any other dynamic patterns you may have.
+If a particular field matches two or more patterns in your schema, solr will assign it to the _longest_ matching pattern, hence the length. As such, this field's name can be
+overridden in case you want to make it longer (or shorter) as needed:
+
+```xml
+<searchComponent name="reverseSearch" class="solr.ReverseSearchComponent">
+    <!-- your other properties -->
+    <str name="aliasPrefix">___saved_search_alias_*</str>
+</searchComponent>
+```
 
 ## Saved Search Cache
 The lucene-monitor library needs a lucene Query object to run a reverse search. They can be kept in-memory to avoid deserializing
