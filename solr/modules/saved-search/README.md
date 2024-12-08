@@ -145,7 +145,7 @@ Query alerting workflows typically involve fetching all searches that have been 
 This is quite different from a typical top-N document search in that the result set is technically unbounded. In practice we frequently
 find that the number of searches "fetched" by a new document is usually well within modern computer resource limits. But if this is not
 the case you can always fall back on Solr’s streaming expressions which should work with the saved-search module. To do this you must
-configure the `/select` handler to have a ReverseSearch component as mentioned in Basic Configuration. The StreamHandler delegates to the
+configure the `/select` handler to have a `reverseSearch` component as mentioned in Basic Configuration. The StreamHandler delegates to the
 `/select` search handler when distributing the stream request and so any dedicated `/reverseSearch` handler you have configured will be ignored.
 Below is an example of how to stream a reverse search:
 
@@ -234,15 +234,15 @@ pre-search filter (more on this in the next section). If you have a use-case whe
 the query cache you can raise a PR.
 
 ## Presearchers
-The saved-search module uses lucene’s monitor library to index queries efficiently. It does this through a two-phase process; a cheap
-approximate filter called a "presearcher" followed by an accurate but expensive matching step. The second phase runs the surviving candidate 
+The saved-search module uses lucene’s monitor library to efficiently retrieve queries. It does this through a two-phase process; a cheap
+approximate filter called a _presearcher_ followed by an accurate but expensive matching step. The second phase runs the surviving candidate 
 queries against an ephemeral index containing only the target document(s). Arguably the most important optimization is extracting relevant 
 terms from each query that an incoming document must have to be considered for the final matching step. Therefore, the presearcher configuration
 is one of the knobs to look at when tuning saved search performance. You can gauge the performance of your presearcher with the help of the 
 `debugQuery=true` parameter. This should return, among other things, a `queriesRun` value which will tell you how many queries passed through 
 the pre-search stage. You want to keep this number as low as possible relative to the actual result size.
 
-The simplest available Presearcher is the `TermFilteredPresearcher` which, among other things, extracts terms from the query which it stores in
+The simplest available presearcher is the `TermFilteredPresearcher` which, among other things, extracts terms from the query which it stores in
 an  index later read by the presearch filter query. The terms it chooses to index depend on the query and the `TermWeightor` it is configured with. 
 The default weightor will pick longer terms over shorter ones, so if you have a query `ruler_txt:lrrr AND planet_txt:"omicron persei 8"` the 
 presearcher will choose to index `omicron` since it is longer than any other intersected term. Note that this can obviously be suboptimal if,
