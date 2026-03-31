@@ -19,7 +19,6 @@ package org.apache.solr.handler.admin;
 import static org.apache.lucene.index.IndexOptions.DOCS;
 import static org.apache.lucene.index.IndexOptions.DOCS_AND_FREQS;
 import static org.apache.lucene.index.IndexOptions.DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS;
-import static org.apache.solr.common.params.CommonParams.DISTRIB;
 import static org.apache.solr.common.params.CommonParams.PATH;
 
 import java.io.IOException;
@@ -77,7 +76,6 @@ import org.apache.solr.common.SolrException.ErrorCode;
 import org.apache.solr.common.luke.FieldFlag;
 import org.apache.solr.common.params.CommonParams;
 import org.apache.solr.common.params.ModifiableSolrParams;
-import org.apache.solr.common.params.ShardParams;
 import org.apache.solr.common.params.SolrParams;
 import org.apache.solr.common.util.NamedList;
 import org.apache.solr.common.util.SimpleOrderedMap;
@@ -177,12 +175,7 @@ public class LukeRequestHandler extends RequestHandlerBase implements SolrCoreAw
   public void handleRequestBody(SolrQueryRequest req, SolrQueryResponse rsp) throws Exception {
     SolrParams params = req.getParams();
 
-    boolean isDistrib = params.getBool(DISTRIB, req.getCoreContainer().isZooKeeperAware());
-    if (!isDistrib) {
-      String shards = params.get(ShardParams.SHARDS);
-      isDistrib = shards != null && shards.indexOf('/') > 0;
-    }
-    if (isDistrib && handleDistributed(req, rsp)) {
+    if (isDistrib(req) && handleDistributed(req, rsp)) {
       return;
     }
 

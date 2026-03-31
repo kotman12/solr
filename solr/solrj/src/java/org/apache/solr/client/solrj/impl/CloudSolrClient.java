@@ -17,6 +17,7 @@
 
 package org.apache.solr.client.solrj.impl;
 
+import static org.apache.solr.common.params.CommonParams.DISTRIB;
 import static org.apache.solr.common.params.CommonParams.ID;
 
 import java.io.IOException;
@@ -1197,6 +1198,13 @@ public abstract class CloudSolrClient extends SolrClient {
         params.set(STATE_VERSION, stateVerParam);
       } else {
         params.remove(STATE_VERSION);
+      }
+      // When addressing a collection, default distrib to true so that handlers
+      // that support distributed mode (e.g. search, luke) aggregate across shards.
+      // This compensates for CloudSolrClient routing to core URLs directly, which
+      // would otherwise prevent server-side collection-vs-core address detection.
+      if (!inputCollections.isEmpty() && !isAdmin && params.get(DISTRIB) == null) {
+        params.set(DISTRIB, true);
       }
     } // else: ??? how to set this ???
 

@@ -302,6 +302,8 @@ public class SearchHandler extends RequestHandlerBase
   }
 
   protected boolean isDistrib(SolrQueryRequest req, ResponseBuilder rb) {
+    // SearchHandler preserves its existing behavior: default to distrib=true when ZK-aware
+    // or when forced by a component, rather than using collection-vs-core address detection.
     boolean theDefault = req.getCoreContainer().isZooKeeperAware() || rb.isForcedDistrib();
     boolean isDistrib = req.getParams().getBool(DISTRIB, theDefault);
     if (!isDistrib) {

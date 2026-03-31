@@ -30,6 +30,7 @@ import org.apache.solr.api.Api;
 import org.apache.solr.api.ApiBag;
 import org.apache.solr.api.ApiSupport;
 import org.apache.solr.common.SolrException;
+import org.apache.solr.common.params.CommonParams;
 import org.apache.solr.common.params.ShardParams;
 import org.apache.solr.common.params.SolrParams;
 import org.apache.solr.common.util.NamedList;
@@ -49,6 +50,7 @@ import org.apache.solr.request.SolrQueryRequest;
 import org.apache.solr.request.SolrRequestHandler;
 import org.apache.solr.response.SolrQueryResponse;
 import org.apache.solr.search.CpuAllowedLimit;
+import org.apache.solr.servlet.HttpSolrCall;
 import org.apache.solr.search.QueryLimits;
 import org.apache.solr.search.QueryLimitsExceededException;
 import org.apache.solr.search.SyntaxError;
@@ -90,6 +92,26 @@ public abstract class RequestHandlerBase
   @SuppressForbidden(reason = "Need currentTimeMillis, used only for stats output")
   public RequestHandlerBase() {
     handlerStart = System.currentTimeMillis();
+  }
+
+  /**
+   * Determines whether this request should be handled in distributed mode. The default is based on
+   * whether the request addressed a collection (distributed) vs a specific core (local). An
+   * explicit {@code distrib} parameter always takes precedence, and a {@code shards} parameter with
+   * URLs implies distributed for backward compatibility.
+   */
+  protected boolean isDistrib(SolrQueryRequest req) {
+    SolrParams params = req.getParams();
+    Boolean explicit = params.getBool(CommonParams.DISTRIB);
+    if (explicit != null) {
+      return explicit;
+    }
+    String shards = params.get(ShardParams.SHARDS);
+    if (shards != null && shards.indexOf('/') > 0) {
+      return true;
+    }
+    HttpSolrCall call = req.getHttpSolrCall();
+    return call != null && call.isCollectionRequest();
   }
 
   /**

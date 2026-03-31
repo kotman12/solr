@@ -27,6 +27,7 @@ import org.apache.solr.client.solrj.request.CollectionAdminRequest;
 import org.apache.solr.client.solrj.request.QueryRequest;
 import org.apache.solr.client.solrj.request.SolrQuery;
 import org.apache.solr.client.solrj.request.schema.SchemaRequest;
+import org.apache.solr.client.solrj.response.LukeResponse;
 import org.apache.solr.client.solrj.response.QueryResponse;
 import org.apache.solr.cloud.SolrCloudTestCase;
 import org.apache.solr.common.SolrException;
@@ -35,6 +36,7 @@ import org.apache.solr.common.cloud.DocCollection;
 import org.apache.solr.common.cloud.Replica;
 import org.apache.solr.common.cloud.Slice;
 import org.apache.solr.common.params.ModifiableSolrParams;
+import org.apache.solr.common.util.NamedList;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Test;
@@ -44,6 +46,7 @@ public class LukeHandlerCloudTest extends SolrCloudTestCase {
 
   @BeforeClass
   public static void setupCluster() throws Exception {
+    System.setProperty("managed.schema.mutable", "true");
     configureCluster(2).addConfig("managed", configset("cloud-managed")).configure();
   }
 
@@ -73,7 +76,6 @@ public class LukeHandlerCloudTest extends SolrCloudTestCase {
   @Test
   public void testInconsistentIndexFlagsAcrossShards() throws Exception {
     String collection = "lukeInconsistentFlags";
-    System.setProperty("managed.schema.mutable", "true");
     CollectionAdminRequest.createCollection(collection, "managed", 2, 1)
         .processAndWait(cluster.getSolrClient(), DEFAULT_TIMEOUT);
 
@@ -154,7 +156,7 @@ public class LukeHandlerCloudTest extends SolrCloudTestCase {
 
       // Distributed Luke should detect inconsistent index flags between the two shards.
       // One shard has stored=true segments, the other has stored=false segments for test_flag_s.
-      // No need to set distrib=true — ZK-aware nodes default to distributed mode.
+      // CloudSolrClient defaults distrib=true when addressing a collection.
       ModifiableSolrParams params = new ModifiableSolrParams();
       params.set("fl", "test_flag_s");
 
@@ -163,6 +165,76 @@ public class LukeHandlerCloudTest extends SolrCloudTestCase {
       assertTrue(
           "exception chain should mention inconsistent index flags: " + fullMessage,
           fullMessage.contains("inconsistent"));
+    } finally {
+      CollectionAdminRequest.deleteCollection(collection)
+          .processAndWait(cluster.getSolrClient(), DEFAULT_TIMEOUT);
+    }
+  }
+
+  /**
+   * Verifies that distrib mode is determined by how the request is addressed: collection path →
+   * distributed, core path → local. Explicit distrib param overrides in both directions.
+   */
+  @Test
+  public void testDistribByAddress() throws Exception {
+    String collection = "lukeDistribByAddress";
+    CollectionAdminRequest.createCollection(collection, "managed", 2, 1)
+        .processAndWait(cluster.getSolrClient(), DEFAULT_TIMEOUT);
+    cluster.waitForActiveCollection(collection, 2, 2);
+
+    try {
+      // Index a doc so fields appear
+      SolrInputDocument doc = new SolrInputDocument();
+      doc.addField("id", "1");
+      cluster.getSolrClient().add(collection, doc);
+      cluster.getSolrClient().commit(collection);
+
+      // Find a replica to address directly by core name
+      DocCollection docColl = getCollectionState(collection);
+      Replica replica = docColl.getSlices().iterator().next().getLeader();
+
+      // --- Collection path: should be distributed by default ---
+      try (SolrClient directClient = getHttpSolrClient(replica)) {
+        // Address via collection name → distributed (shards section present)
+        ModifiableSolrParams params = new ModifiableSolrParams();
+        params.set("qt", "/admin/luke");
+        params.set("numTerms", "0");
+        QueryRequest req = new QueryRequest(params);
+        NamedList<Object> raw = directClient.request(req, collection);
+        LukeResponse rsp = new LukeResponse();
+        rsp.setResponse(raw);
+        assertNotNull(
+            "collection-addressed request should be distributed (shards present)",
+            rsp.getShardResponses());
+
+        // --- Core path: should be local by default ---
+        raw = directClient.request(req, replica.getCoreName());
+        rsp = new LukeResponse();
+        rsp.setResponse(raw);
+        assertNull(
+            "core-addressed request should be local (no shards)",
+            rsp.getShardResponses());
+
+        // --- Core path + distrib=true: should override to distributed ---
+        params.set(DISTRIB, true);
+        req = new QueryRequest(params);
+        raw = directClient.request(req, replica.getCoreName());
+        rsp = new LukeResponse();
+        rsp.setResponse(raw);
+        assertNotNull(
+            "core-addressed with distrib=true should be distributed",
+            rsp.getShardResponses());
+
+        // --- Collection path + distrib=false: should override to local ---
+        params.set(DISTRIB, false);
+        req = new QueryRequest(params);
+        raw = directClient.request(req, collection);
+        rsp = new LukeResponse();
+        rsp.setResponse(raw);
+        assertNull(
+            "collection-addressed with distrib=false should be local",
+            rsp.getShardResponses());
+      }
     } finally {
       CollectionAdminRequest.deleteCollection(collection)
           .processAndWait(cluster.getSolrClient(), DEFAULT_TIMEOUT);

@@ -138,6 +138,8 @@ public class HttpSolrCall {
   // The states of client that is invalid in this request
   // What's in the URL path; might reference a collection/alias or a Solr core name
   protected String origCorename;
+  // True if the request addressed a collection (vs a specific core by name)
+  protected boolean collectionRequest;
   // The list of SolrCloud collections if in SolrCloud (usually 1)
   protected List<String> collectionsList;
 
@@ -249,6 +251,7 @@ public class HttpSolrCall {
       if (core == null) {
         // lookup core from collection, or route away if need to
         // route to 1st
+        collectionRequest = true;
         String collectionName = collectionsList.isEmpty() ? null : collectionsList.get(0);
         // TODO try the other collections if can't find a local replica of the first?   (and do to
         // V2HttpSolrCall)
@@ -963,6 +966,15 @@ public class HttpSolrCall {
 
   protected Object _getHandler() {
     return handler;
+  }
+
+  /**
+   * Returns true if this request addressed a collection rather than a specific core. In V1 API,
+   * this is detected by whether the URL path segment resolved as a core name (false) or was
+   * resolved via collection name lookup in ZooKeeper (true). Returns false for non-cloud mode.
+   */
+  public boolean isCollectionRequest() {
+    return collectionRequest;
   }
 
   /**

@@ -133,7 +133,8 @@ public class V2HttpCall extends HttpSolrCall {
         assert core == null;
       }
 
-      if (pathSegments.size() > 1 && ("c".equals(prefix) || "collections".equals(prefix))) {
+      collectionRequest = "c".equals(prefix) || "collections".equals(prefix);
+      if (pathSegments.size() > 1 && collectionRequest) {
         origCorename = pathSegments.get(1);
 
         String collectionStr = queryParams.get(COLLECTION_PROP, origCorename);
