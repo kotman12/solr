@@ -240,4 +240,38 @@ public class LukeHandlerCloudTest extends SolrCloudTestCase {
           .processAndWait(cluster.getSolrClient(), DEFAULT_TIMEOUT);
     }
   }
+
+  /**
+   * Verifies that CloudSolrClient (which routes to core URLs directly) still gets distributed
+   * behavior when addressing a collection, thanks to CloudSolrClient defaulting distrib=true.
+   */
+  @Test
+  public void testDistribByAddressCloudSolrClient() throws Exception {
+    String collection = "lukeDistribCloudClient";
+    CollectionAdminRequest.createCollection(collection, "managed", 2, 1)
+        .processAndWait(cluster.getSolrClient(), DEFAULT_TIMEOUT);
+    cluster.waitForActiveCollection(collection, 2, 2);
+
+    try {
+      SolrInputDocument doc = new SolrInputDocument();
+      doc.addField("id", "1");
+      cluster.getSolrClient().add(collection, doc);
+      cluster.getSolrClient().commit(collection);
+
+      // CloudSolrClient addresses collection — should be distributed
+      ModifiableSolrParams params = new ModifiableSolrParams();
+      params.set("qt", "/admin/luke");
+      params.set("numTerms", "0");
+      QueryRequest req = new QueryRequest(params);
+      NamedList<Object> raw = cluster.getSolrClient().request(req, collection);
+      LukeResponse rsp = new LukeResponse();
+      rsp.setResponse(raw);
+      assertNotNull(
+          "CloudSolrClient collection request should be distributed (shards present)",
+          rsp.getShardResponses());
+    } finally {
+      CollectionAdminRequest.deleteCollection(collection)
+          .processAndWait(cluster.getSolrClient(), DEFAULT_TIMEOUT);
+    }
+  }
 }
