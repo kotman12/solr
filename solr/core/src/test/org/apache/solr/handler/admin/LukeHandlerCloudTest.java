@@ -269,6 +269,18 @@ public class LukeHandlerCloudTest extends SolrCloudTestCase {
       assertNotNull(
           "CloudSolrClient collection request should be distributed (shards present)",
           rsp.getShardResponses());
+
+      // CloudSolrClient addresses a specific core — should be local
+      DocCollection docColl = getCollectionState(collection);
+      String coreName = docColl.getSlices().iterator().next().getLeader().getCoreName();
+      params.remove(DISTRIB);
+      req = new QueryRequest(params);
+      raw = cluster.getSolrClient().request(req, coreName);
+      rsp = new LukeResponse();
+      rsp.setResponse(raw);
+      assertNull(
+          "CloudSolrClient core request should be local (no shards)",
+          rsp.getShardResponses());
     } finally {
       CollectionAdminRequest.deleteCollection(collection)
           .processAndWait(cluster.getSolrClient(), DEFAULT_TIMEOUT);
