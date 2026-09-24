@@ -26,8 +26,10 @@ import jakarta.servlet.ServletResponse;
 import jakarta.servlet.http.HttpServletRequest;
 import java.io.IOException;
 import java.lang.invoke.MethodHandles;
-import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
 import org.apache.solr.client.solrj.request.CollectionAdminRequest;
 import org.apache.solr.common.SolrInputDocument;
@@ -78,15 +80,14 @@ public class TlogLeaderElectionFrozenLeaderTest extends SolrCloudTestCase {
     // extraFilters are installed ahead of SolrServlet and its filters (JettySolrRunner:336-338), so
     // ours sees the request first. It is installed on every node but only acts on the armed core.
     configureCluster(2)
-        .withJettyConfig(b -> b.withFilter(FreezeIndexVersionFilter.class, "/*"))
+        .withJettyConfig(b -> b.withFilter(TestFreezeReplicationFilter.class, "/*"))
         .addConfig("conf", configset("cloud-minimal"))
         .configure();
   }
 
   @After
   public void tearDownCluster() throws Exception {
-    // Release before shutdown, otherwise the held Jetty thread stalls cluster teardown.
-    FreezeIndexVersionFilter.reset();
+    TestFreezeReplicationFilter.release();
     shutdownCluster();
     System.clearProperty("solr.directoryFactory");
   }
@@ -118,14 +119,19 @@ public class TlogLeaderElectionFrozenLeaderTest extends SolrCloudTestCase {
     // Freeze the leader's replication endpoint. The follower polls every second under
     // jetty.testMode, so its next indexversion call lands in the filter and never returns.
     log.info("Freezing indexversion responses from leader core {}", oldLeader.getCoreName());
-    FreezeIndexVersionFilter.arm(oldLeader.getCoreName());
+    TestCoreChannel channel = new TestCoreChannel(oldLeader.getCoreName());
+    assertTrue(
+        "the replication filter was already armed; a previous test did not release it",
+        TestFreezeReplicationFilter.CORE_CHANNEL.compareAndSet(null, channel));
 
     // The ordering here is the whole point: once the leader leaves live_nodes, later polls bail out
     // early (LEADER_IS_NOT_ACTIVE) without making an HTTP call. Only a fetch that is *already* in
     // the network phase reproduces the bug.
-    assertTrue(
-        "the follower never issued an indexversion request to the leader",
-        FreezeIndexVersionFilter.awaitArrival(30, TimeUnit.SECONDS));
+    try {
+      channel.arrived().get(MAX_ACCEPTABLE_ELECTION_MS, TimeUnit.MILLISECONDS);
+    } catch (TimeoutException e) {
+      fail("the follower never issued an indexversion request to the leader");
+    }
     log.info("Follower's index fetch is parked in the leader's replication handler");
 
     log.info("Expiring the ZooKeeper session of the frozen leader {}", leaderJetty.getNodeName());
@@ -156,52 +162,53 @@ public class TlogLeaderElectionFrozenLeaderTest extends SolrCloudTestCase {
         elapsedMs < MAX_ACCEPTABLE_ELECTION_MS);
   }
 
+  private record TestCoreChannel(
+      String coreName, CompletableFuture<Void> arrived, CompletableFuture<Void> released) {
+    TestCoreChannel(String coreName) {
+      this(coreName, new CompletableFuture<>(), new CompletableFuture<>());
+    }
+  }
+
   /**
    * Holds {@code /replication?command=indexversion} requests addressed to one particular core,
-   * simulating a leader whose process is alive but which has stopped answering. Signals {@link
-   * #awaitArrival} as soon as such a request arrives, which is the test's proof that the follower's
-   * fetch is in the network phase and cannot complete.
+   * simulating a leader whose process is alive but which has stopped answering.
    *
    * <p>Coordination is static because {@code JettyConfig.Builder.withFilter} takes a {@link Class}
-   * and lets Jetty construct the instance. That is fine here: both nodes share one JVM, and the
-   * filter is inert until armed with a specific core name.
+   * and lets Jetty construct the instance.
    */
-  public static class FreezeIndexVersionFilter implements Filter {
+  public static class TestFreezeReplicationFilter implements Filter {
 
-    private static final AtomicReference<String> armedCore = new AtomicReference<>();
-    private static volatile CountDownLatch arrived = new CountDownLatch(1);
-    private static volatile CountDownLatch release = new CountDownLatch(0);
+    private static final AtomicReference<TestCoreChannel> CORE_CHANNEL = new AtomicReference<>();
 
-    static void arm(String coreName) {
-      arrived = new CountDownLatch(1);
-      release = new CountDownLatch(1);
-      armedCore.set(coreName);
-    }
-
-    static boolean awaitArrival(long timeout, TimeUnit unit) throws InterruptedException {
-      return arrived.await(timeout, unit);
-    }
-
-    /** Disarms and lets any held request through. Safe to call when nothing is armed. */
-    static void reset() {
-      armedCore.set(null);
-      release.countDown();
+    static void release() {
+      TestCoreChannel coreChannel = CORE_CHANNEL.getAndSet(null);
+      if (coreChannel != null) {
+        coreChannel.released().complete(null);
+      }
     }
 
     @Override
     public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain)
         throws IOException, ServletException {
-      String core = armedCore.get();
+      // Capture once: the test nulls CORE_CHANNEL out in release().
+      TestCoreChannel coreChannel = CORE_CHANNEL.get();
+      String core = coreChannel == null ? null : coreChannel.coreName();
       if (core != null && request instanceof HttpServletRequest http) {
         String uri = http.getRequestURI();
         if (uri != null
             && uri.endsWith("/" + core + ReplicationHandler.PATH)
             && ReplicationHandler.CMD_INDEX_VERSION.equals(http.getParameter("command"))) {
-          arrived.countDown();
           try {
-            release.await();
+            // Tell the test the fetch has arrived and cannot complete, then hold the response for
+            // longer than the acceptable leader election duration.
+            coreChannel.arrived().complete(null);
+            coreChannel.released().get(MAX_ACCEPTABLE_ELECTION_MS * 2, TimeUnit.MILLISECONDS);
+          } catch (TimeoutException e) {
+            // Hold cap reached without a release; answer the request and let teardown proceed.
           } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            throw new ServletException(e);
+          } catch (ExecutionException e) {
             throw new ServletException(e);
           }
         }
