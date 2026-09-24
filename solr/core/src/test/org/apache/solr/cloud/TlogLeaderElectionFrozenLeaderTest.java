@@ -87,7 +87,10 @@ public class TlogLeaderElectionFrozenLeaderTest extends SolrCloudTestCase {
 
   @After
   public void tearDownCluster() throws Exception {
-    TestFreezeReplicationFilter.release();
+    TestCoreChannel coreChannel = TestFreezeReplicationFilter.CORE_CHANNEL.getAndSet(null);
+    if (coreChannel != null) {
+      coreChannel.released().complete(null);
+    }
     shutdownCluster();
     System.clearProperty("solr.directoryFactory");
   }
@@ -162,13 +165,6 @@ public class TlogLeaderElectionFrozenLeaderTest extends SolrCloudTestCase {
         elapsedMs < MAX_ACCEPTABLE_ELECTION_MS);
   }
 
-  private record TestCoreChannel(
-      String coreName, CompletableFuture<Void> arrived, CompletableFuture<Void> released) {
-    TestCoreChannel(String coreName) {
-      this(coreName, new CompletableFuture<>(), new CompletableFuture<>());
-    }
-  }
-
   /**
    * Holds {@code /replication?command=indexversion} requests addressed to one particular core,
    * simulating a leader whose process is alive but which has stopped answering.
@@ -179,13 +175,6 @@ public class TlogLeaderElectionFrozenLeaderTest extends SolrCloudTestCase {
   public static class TestFreezeReplicationFilter implements Filter {
 
     private static final AtomicReference<TestCoreChannel> CORE_CHANNEL = new AtomicReference<>();
-
-    static void release() {
-      TestCoreChannel coreChannel = CORE_CHANNEL.getAndSet(null);
-      if (coreChannel != null) {
-        coreChannel.released().complete(null);
-      }
-    }
 
     @Override
     public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain)
@@ -214,6 +203,13 @@ public class TlogLeaderElectionFrozenLeaderTest extends SolrCloudTestCase {
         }
       }
       chain.doFilter(request, response);
+    }
+  }
+
+  private record TestCoreChannel(
+      String coreName, CompletableFuture<Void> arrived, CompletableFuture<Void> released) {
+    TestCoreChannel(String coreName) {
+      this(coreName, new CompletableFuture<>(), new CompletableFuture<>());
     }
   }
 }
