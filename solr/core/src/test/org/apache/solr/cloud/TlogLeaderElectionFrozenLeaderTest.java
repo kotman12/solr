@@ -17,15 +17,22 @@
 
 package org.apache.solr.cloud;
 
+import com.carrotsearch.randomizedtesting.annotations.Name;
+import com.carrotsearch.randomizedtesting.annotations.ParametersFactory;
 import com.carrotsearch.randomizedtesting.annotations.ThreadLeakLingering;
 import jakarta.servlet.Filter;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
+import jakarta.servlet.ServletOutputStream;
 import jakarta.servlet.ServletRequest;
 import jakarta.servlet.ServletResponse;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import jakarta.servlet.http.HttpServletResponseWrapper;
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.lang.invoke.MethodHandles;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -37,6 +44,7 @@ import org.apache.solr.common.cloud.Replica;
 import org.apache.solr.common.cloud.Slice;
 import org.apache.solr.embedded.JettySolrRunner;
 import org.apache.solr.handler.ReplicationHandler;
+import org.apache.solr.servlet.ServletOutputStreamWrapper;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -53,11 +61,6 @@ import org.slf4j.LoggerFactory;
  * is polled while streaming file packets, so a fetch parked in the network phase is not cut short:
  * the election parks for the 60s executor wait before {@code shutdownNow()} finally interrupts the
  * poll thread.
- *
- * <p>The old leader has to <em>freeze</em>, not die, so we hold its {@code indexversion} response
- * in a servlet filter and expire its ZooKeeper session to make it lose leadership. The filter
- * doubles as the synchronization point: when it fires we know for certain that the follower's fetch
- * has reached the leader and will not return.
  */
 @ThreadLeakLingering(linger = 10)
 public class TlogLeaderElectionFrozenLeaderTest extends SolrCloudTestCase {
@@ -73,6 +76,42 @@ public class TlogLeaderElectionFrozenLeaderTest extends SolrCloudTestCase {
    */
   private static final long MAX_ACCEPTABLE_ELECTION_MS = 20_000;
 
+  /** Where a follower's fetch can park against a frozen leader. */
+  public enum TestStallPoint {
+    INDEX_VERSION(ReplicationHandler.CMD_INDEX_VERSION, false),
+    FILE_LIST(ReplicationHandler.CMD_GET_FILE_LIST, false),
+    FILE_CONTENT(ReplicationHandler.CMD_GET_FILE, false),
+    /**
+     * Headers and part of the first packet arrive, then the body stops: the common production case.
+     */
+    FILE_CONTENT_BODY(ReplicationHandler.CMD_GET_FILE, true);
+
+    final String command;
+    final boolean midBody;
+
+    TestStallPoint(String command, boolean midBody) {
+      this.command = command;
+      this.midBody = midBody;
+    }
+  }
+
+  /**
+   * Nightly runs every stall point. Otherwise only the mid-body file download, the most likely
+   * failure in production, so every CI run covers it.
+   */
+  @ParametersFactory
+  public static Iterable<Object[]> parameters() {
+    List<TestStallPoint> stallPoints =
+        TEST_NIGHTLY ? List.of(TestStallPoint.values()) : List.of(TestStallPoint.FILE_CONTENT_BODY);
+    return stallPoints.stream().map(stallPoint -> new Object[] {stallPoint}).toList();
+  }
+
+  private final TestStallPoint stallPoint;
+
+  public TlogLeaderElectionFrozenLeaderTest(@Name("stallPoint") TestStallPoint stallPoint) {
+    this.stallPoint = stallPoint;
+  }
+
   @Before
   public void setupCluster() throws Exception {
     System.setProperty("solr.directoryFactory", "solr.StandardDirectoryFactory");
@@ -80,16 +119,16 @@ public class TlogLeaderElectionFrozenLeaderTest extends SolrCloudTestCase {
     // extraFilters are installed ahead of SolrServlet and its filters (JettySolrRunner:336-338), so
     // ours sees the request first. It is installed on every node but only acts on the armed core.
     configureCluster(2)
-        .withJettyConfig(b -> b.withFilter(TestFreezeReplicationFilter.class, "/*"))
+        .withJettyConfig(b -> b.withFilter(TestStallReplicationFilter.class, "/*"))
         .addConfig("conf", configset("cloud-minimal"))
         .configure();
   }
 
   @After
   public void tearDownCluster() throws Exception {
-    TestCoreChannel coreChannel = TestFreezeReplicationFilter.CORE_CHANNEL.getAndSet(null);
-    if (coreChannel != null) {
-      coreChannel.released().complete(null);
+    TestStallChannel stallChannel = TestStallReplicationFilter.STALL_CHANNEL.getAndSet(null);
+    if (stallChannel != null) {
+      stallChannel.released().complete(null);
     }
     shutdownCluster();
     System.clearProperty("solr.directoryFactory");
@@ -102,12 +141,7 @@ public class TlogLeaderElectionFrozenLeaderTest extends SolrCloudTestCase {
     cluster.waitForActiveCollection(COLLECTION, 1, 2);
 
     // Index something so the follower has a real index to poll against.
-    for (int i = 0; i < 10; i++) {
-      SolrInputDocument doc = new SolrInputDocument();
-      doc.addField("id", String.valueOf(i));
-      cluster.getSolrClient(COLLECTION).add(doc);
-    }
-    cluster.getSolrClient(COLLECTION).commit();
+    indexAndCommit(0, 10);
 
     Slice shard = getCollectionState(COLLECTION).getSlice(SHARD);
     Replica oldLeader = shard.getLeader();
@@ -119,21 +153,25 @@ public class TlogLeaderElectionFrozenLeaderTest extends SolrCloudTestCase {
     JettySolrRunner leaderJetty = cluster.getReplicaJetty(oldLeader);
     JettySolrRunner followerJetty = cluster.getReplicaJetty(follower);
 
-    // Freeze the leader's replication endpoint. The follower polls every second under
-    // jetty.testMode, so its next indexversion call lands in the filter and never returns.
-    log.info("Freezing indexversion responses from leader core {}", oldLeader.getCoreName());
-    TestCoreChannel channel = new TestCoreChannel(oldLeader.getCoreName());
+    // Stall one of the leader's replication commands. The follower polls every second under
+    // jetty.testMode, so its next request for that command lands in the filter and never returns.
+    log.info("Stalling {} responses from leader core {}", stallPoint, oldLeader.getCoreName());
+    TestStallChannel channel = new TestStallChannel(oldLeader.getCoreName(), stallPoint);
     assertTrue(
         "the replication filter was already armed; a previous test did not release it",
-        TestFreezeReplicationFilter.CORE_CHANNEL.compareAndSet(null, channel));
+        TestStallReplicationFilter.STALL_CHANNEL.compareAndSet(null, channel));
 
-    // The ordering here is the whole point: once the leader leaves live_nodes, later polls bail out
+    // Give the follower something new to fetch. Every poll sends indexversion, but filelist and
+    // filecontent are only requested once the leader has a newer commit than the follower.
+    indexAndCommit(10, 20);
+
+    // The ordering here is important: once the leader leaves live_nodes, later polls bail out
     // early (LEADER_IS_NOT_ACTIVE) without making an HTTP call. Only a fetch that is *already* in
     // the network phase reproduces the bug.
     try {
       channel.arrived().get(MAX_ACCEPTABLE_ELECTION_MS, TimeUnit.MILLISECONDS);
     } catch (TimeoutException e) {
-      fail("the follower never issued an indexversion request to the leader");
+      fail("the follower never issued a " + stallPoint.command + " request to the leader");
     }
     log.info("Follower's index fetch is parked in the leader's replication handler");
 
@@ -165,51 +203,133 @@ public class TlogLeaderElectionFrozenLeaderTest extends SolrCloudTestCase {
         elapsedMs < MAX_ACCEPTABLE_ELECTION_MS);
   }
 
-  /**
-   * Holds {@code /replication?command=indexversion} requests addressed to one particular core,
-   * simulating a leader whose process is alive but which has stopped answering.
-   *
-   * <p>Coordination is static because {@code JettyConfig.Builder.withFilter} takes a {@link Class}
-   * and lets Jetty construct the instance.
-   */
-  public static class TestFreezeReplicationFilter implements Filter {
+  private static void indexAndCommit(int fromId, int toId) throws Exception {
+    for (int i = fromId; i < toId; i++) {
+      SolrInputDocument doc = new SolrInputDocument();
+      doc.addField("id", String.valueOf(i));
+      cluster.getSolrClient(COLLECTION).add(doc);
+    }
+    cluster.getSolrClient(COLLECTION).commit();
+  }
 
-    private static final AtomicReference<TestCoreChannel> CORE_CHANNEL = new AtomicReference<>();
+  /**
+   * Stalls {@code /replication} requests for one command addressed to one particular core,
+   * simulating a leader whose process is alive but which has stopped answering. Depending on the
+   * {@link TestStallPoint}, the stall happens either before any response is sent, or after the
+   * headers and the first half of the body's first write have been flushed to the wire.
+   */
+  public static class TestStallReplicationFilter implements Filter {
+
+    private static final AtomicReference<TestStallChannel> STALL_CHANNEL = new AtomicReference<>();
 
     @Override
     public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain)
         throws IOException, ServletException {
-      // Capture once: the test nulls CORE_CHANNEL out in release().
-      TestCoreChannel coreChannel = CORE_CHANNEL.get();
-      String core = coreChannel == null ? null : coreChannel.coreName();
-      if (core != null && request instanceof HttpServletRequest http) {
-        String uri = http.getRequestURI();
-        if (uri != null
-            && uri.endsWith("/" + core + ReplicationHandler.PATH)
-            && ReplicationHandler.CMD_INDEX_VERSION.equals(http.getParameter("command"))) {
-          try {
-            // Tell the test the fetch has arrived and cannot complete, then hold the response for
-            // longer than the acceptable leader election duration.
-            coreChannel.arrived().complete(null);
-            coreChannel.released().get(MAX_ACCEPTABLE_ELECTION_MS * 2, TimeUnit.MILLISECONDS);
-          } catch (TimeoutException e) {
-            // Hold cap reached without a release; answer the request and let teardown proceed.
-          } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new ServletException(e);
-          } catch (ExecutionException e) {
-            throw new ServletException(e);
-          }
-        }
+      // Capture once: the test nulls STALL_CHANNEL out in tearDownCluster().
+      TestStallChannel stallChannel = STALL_CHANNEL.get();
+      if (stallChannel == null || !stallChannel.matches(request)) {
+        chain.doFilter(request, response);
+      } else if (stallChannel.stallPoint().midBody) {
+        chain.doFilter(request, new TestMidBodyStall((HttpServletResponse) response, stallChannel));
+      } else {
+        stallChannel.stall();
+        chain.doFilter(request, response);
       }
-      chain.doFilter(request, response);
     }
   }
 
-  private record TestCoreChannel(
-      String coreName, CompletableFuture<Void> arrived, CompletableFuture<Void> released) {
-    TestCoreChannel(String coreName) {
-      this(coreName, new CompletableFuture<>(), new CompletableFuture<>());
+  /**
+   * Lets the headers and the first half of the body's first write reach the client, then stalls.
+   */
+  private static class TestMidBodyStall extends HttpServletResponseWrapper {
+    private final TestStallChannel stallChannel;
+    private ServletOutputStream stream;
+    private boolean stalled;
+
+    TestMidBodyStall(HttpServletResponse response, TestStallChannel stallChannel) {
+      super(response);
+      this.stallChannel = stallChannel;
+    }
+
+    @Override
+    public ServletOutputStream getOutputStream() throws IOException {
+      if (stream == null) {
+        // Each write overload delegates independently, so all three need the hook.
+        stream =
+            new ServletOutputStreamWrapper(super.getOutputStream()) {
+              @Override
+              public void write(int b) throws IOException {
+                super.write(b);
+                stallOnce(this);
+              }
+
+              @Override
+              public void write(byte[] b) throws IOException {
+                write(b, 0, b.length);
+              }
+
+              @Override
+              public void write(byte[] b, int off, int len) throws IOException {
+                if (!stalled && len > 1) {
+                  int head = len / 2;
+                  super.write(b, off, head);
+                  stallOnce(this);
+                  super.write(b, off + head, len - head);
+                } else {
+                  super.write(b, off, len);
+                  stallOnce(this);
+                }
+              }
+            };
+      }
+      return stream;
+    }
+
+    private void stallOnce(ServletOutputStream out) throws IOException {
+      if (!stalled) {
+        stalled = true;
+        // Need to flush Jetty buffer so client gets header bytes.
+        out.flush();
+        stallChannel.stall();
+      }
+    }
+  }
+
+  private record TestStallChannel(
+      String coreToStall,
+      TestStallPoint stallPoint,
+      CompletableFuture<Void> arrived,
+      CompletableFuture<Void> released) {
+    TestStallChannel(String coreToStall, TestStallPoint stallPoint) {
+      this(coreToStall, stallPoint, new CompletableFuture<>(), new CompletableFuture<>());
+    }
+
+    boolean matches(ServletRequest request) {
+      if (!(request instanceof HttpServletRequest http)) {
+        return false;
+      }
+      String uri = http.getRequestURI();
+      return uri != null
+          && uri.endsWith("/" + coreToStall + ReplicationHandler.PATH)
+          && stallPoint.command.equals(http.getParameter("command"));
+    }
+
+    /**
+     * Tells the test the fetch has arrived and cannot complete, then holds the calling Jetty thread
+     * for longer than the acceptable leader election duration, or until the test releases it.
+     */
+    void stall() throws IOException {
+      arrived.complete(null);
+      try {
+        released.get(MAX_ACCEPTABLE_ELECTION_MS * 2, TimeUnit.MILLISECONDS);
+      } catch (TimeoutException e) {
+        // Hold cap reached without a release; carry on and let teardown proceed.
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new InterruptedIOException(e.toString());
+      } catch (ExecutionException e) {
+        throw new IOException(e);
+      }
     }
   }
 }
